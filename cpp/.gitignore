@@ -1,0 +1,11 @@
+# build artifacts of the C++ port
+build/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+*.pdb
+compile_commands.json

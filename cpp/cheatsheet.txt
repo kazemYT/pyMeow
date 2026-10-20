@@ -1,0 +1,484 @@
+################################################################################################################
+pyMeow C++ -- API cheatsheet (2.0.0)
+https://github.com/qb-0/pyMeow
+
+  #include <pymeow.hpp>          // everything, or include a single module header
+  namespace pymeow (alias pm)    // pm::readInt(...), pm::gui::button(...), pm::sound::load(...)
+
+  Requires C++17. Compile the sources of cpp/src/ with your project (imgui style).
+  Memory / input / pixel core: no third party dependency (build with -DPYMEOW_NO_GRAPHICS).
+  Overlay / render / gui / sound: raylib 5.x (+ raygui 4.0 or newer for gui.hpp).
+  Linux links -lX11 -lXtst -lXinerama, Windows links gdi32 user32 psapi winmm.
+
+  See cpp/README.md for build instructions and cpp/pymeow/pycompat.hpp for the
+  snake_case names of the Python module (r_int, w_bytes, gui_button, load_sound, ...).
+################################################################################################################
+
+##############################################################################################################
+Types (pymeow/types.hpp, pymeow/memcore.hpp, pymeow/overlay.hpp, pymeow/memop.hpp)
+##############################################################################################################
+using Address = std::uintptr_t                       // remote address inside the target process
+using byte    = std::uint8_t
+using Matrix  = std::array<float, 16>                // view / projection matrix of a game
+inline constexpr Address invalidAddress = 0
+
+struct Vec2   { float x, y; }                        // arithmetic operators +, -, *, / (and raylib conversion)
+struct Vec3   { float x, y, z; }                     // arithmetic operators +, -, *, / (and raylib conversion)
+struct Color  { std::uint8_t r, g, b, a = 255; }     // Color(0xRRGGBBAA), ==, != (and raylib conversion)
+struct Rect   { float x, y, width, height; }         // converts to raylib Rectangle
+struct Pixel  { int x, y; Color color; }             // one pixel of a screen capture
+struct WindowInfo { std::string name; int x, y, width, height; }
+struct WtsResult  { bool inBounds; Vec2 pos; }       // worldToScreenNoExc()
+
+struct Module { std::string name, path; Address base, end, size; explicit operator bool(); }
+struct MemoryRegion { Address start, end, size; std::string perms; std::uint32_t protection; bool readable; }
+struct Process { std::string name; int pid; bool debug; Address base; void* handle; explicit operator bool(); }
+struct OverlayConfig { std::string target = "Full"; int fps = 0; std::string title = "pyMeow"; int logLevel = 5;
+                       int exitKey = -1; bool trackTarget = false; bool transparent = true; bool topmost = true;
+                       bool mousePassthrough = true; }
+enum class DataType { Int8, Int16, Int, Int64, Byte, UInt16, UInt, UInt64, Float, Float64, Bool, Vec2, Vec3, String }
+using Value = std::variant<std::int8_t, ..., float, double, bool, Vec2, Vec3, std::string>   // dynamic r() / w()
+
+namespace colors { transparent, white, black, red, green, blue, cyan, magenta, yellow, orange, gray, ... }
+
+Exceptions (pymeow/error.hpp):
+  struct Error : std::runtime_error                  // base class of every pyMeow exception
+  struct NotFoundError : Error                       // process / module / window / font not found
+  struct MemoryError : Error { std::uintptr_t address; int code; }   // read / write failed
+  struct OutOfBoundsError : Error                    // worldToScreen: position behind the camera
+  struct InvalidArgumentError : Error                // bad AOB pattern, range, font id, ...
+
+Key codes (pymeow/keys.hpp) -- namespace pymeow::keys:
+  Windows build: VK_* values (keys::End == VK_END == 0x23, keys::A == 0x41, keys::F1 ... keys::F12,
+                 keys::Escape, keys::Space, keys::Left/Right/Up/Down, keys::Shift/Ctrl/Alt, ...)
+  Linux build:   XK_* keysyms (keys::End == XK_End == 0xFF57, keys::Escape == XK_Escape == 0xFF1B, ...)
+  The same name works on both platforms:  cfg.exitKey = pm::keys::End;
+
+Version macros (pymeow/defs.hpp):
+  PYMEOW_VERSION_MAJOR / _MINOR / _PATCH / PYMEOW_VERSION_STRING ("2.0.0")
+  PYMEOW_LINUX / PYMEOW_WINDOWS, PYMEOW_ARCH_X64 / _X86 / _ARM64
+  PYMEOW_API, PYMEOW_WITH_RAYLIB, PYMEOW_WITH_GUI
+
+##############################################################################################################
+  pymeow/common.hpp
+##############################################################################################################
+const char* version()
+const char* systemName()
+
+##############################################################################################################
+  pymeow/error.hpp
+##############################################################################################################
+Error : std::runtime_error
+NotFoundError : Error
+MemoryError : Error
+OutOfBoundsError : Error
+InvalidArgumentError : Error
+std::pair<int, std::string> getOsError()
+std::string errorString()
+
+##############################################################################################################
+Memory core (processes, modules, regions, AOB, injection)
+  pymeow/memcore.hpp
+##############################################################################################################
+std::vector<Process> enumProcesses()
+bool pidExists(int pid)
+bool processExists(const std::string& processName)
+bool processRunning(const Process& process)
+int getProcessId(const std::string& processName)
+std::string getProcessName(int pid)
+std::string getProcessPath(const Process& process)
+std::vector<Module> enumModules(const Process& process)
+bool moduleExists(const Process& process, const std::string& moduleName)
+Module getModule(const Process& process, const std::string& moduleName)
+Module findModule(const Process& process, const std::string& moduleName)
+Process openProcess(int pid, bool debug = false)
+Process openProcess(const std::string& processName, bool debug = false)
+void closeProcess(Process& process)
+std::vector<MemoryRegion> enumMemoryRegions(const Process& process, const Module& module)
+bool is64Bit(const Process& process)
+void setRequireRoot(bool enable)
+bool requireRootEnabled()
+void readPointer(const Process& process, Address address, void* dst, std::size_t size)
+void writePointer(const Process& process, Address address, const void* src, std::size_t size)
+bool tryReadPointer(const Process& process, Address address, void* dst, std::size_t size)
+bool tryWritePointer(const Process& process, Address address, const void* src, std::size_t size)
+template <class T> T read(const Process& process, Address address)
+template <class T> std::vector<T> readSeq(const Process& process, Address address, std::size_t count)
+template <class T> void write(const Process& process, Address address, const T& data)
+template <class T> void writeArray(const Process& process, Address address, const T* data, std::size_t count)
+template <class T> void writeArray(const Process& process, Address address, const std::vector<T>& data)
+template <class T, std::size_t N> void writeArray(const Process& process, Address address, const std::array<T, N>& data)
+template <class T, std::size_t N> void writeArray(const Process& process, Address address, const T (&data)[N])
+template <class T> void writeArray(const Process& process, Address address, std::initializer_list<T> data)
+std::vector<Address> aobScanModule(const Process& process, const std::string& moduleName, const std::string& pattern, bool relative = false, bool single = true, int algorithm = 0)
+std::vector<Address> aobScanRange(const Process& process, const std::string& pattern, Address rangeStart, Address rangeEnd, bool relative = false, bool single = true, int algorithm = 0)
+std::vector<Address> aobScanRegion(const Process& process, const MemoryRegion& region, const std::string& pattern, bool relative = false, bool single = true, int algorithm = 0)
+std::vector<Address> aobScanBytes(const std::string& pattern, const std::vector<std::uint8_t>& byteBuffer, bool single = true, int algorithm = 0)
+std::vector<Address> aobScanBytes(const std::string& pattern, const std::uint8_t* data, std::size_t size, bool single = true, int algorithm = 0)
+std::int32_t pageProtection(const Process& process, Address address, std::int32_t newProtection)
+Address allocateMemory(const Process& process, std::size_t size, std::int32_t protection = 0)
+bool freeMemory(const Process& process, Address address)
+Address getProcAddress(const std::string& moduleName, const std::string& functionName)
+bool createRemoteThread(const Process& process, Address startAddress, Address param = 0, Address* exitCode = nullptr)
+bool injectLibrary(const Process& process, const std::string& dllPath)
+bool injectShellcode(const Process& process, const std::vector<std::uint8_t>& shellcode, Address params = 0)
+bool injectShellcode(const Process& process, const std::string& shellcode, Address params = 0)
+
+##############################################################################################################
+Memory operations (typed read / write, strings, pointer chains)
+  pymeow/memop.hpp
+##############################################################################################################
+std::int8_t readInt8(const Process& process, Address address)
+std::int16_t readInt16(const Process& process, Address address)
+std::int32_t readInt(const Process& process, Address address)
+std::int64_t readInt64(const Process& process, Address address)
+std::uint8_t readByte(const Process& process, Address address)
+std::uint16_t readUInt16(const Process& process, Address address)
+std::uint32_t readUInt(const Process& process, Address address)
+std::uint64_t readUInt64(const Process& process, Address address)
+float readFloat(const Process& process, Address address)
+double readFloat64(const Process& process, Address address)
+bool readBool(const Process& process, Address address)
+Vec2 readVec2(const Process& process, Address address)
+Vec3 readVec3(const Process& process, Address address)
+std::vector<std::int8_t> readInts8(const Process& process, Address address, std::size_t count)
+std::vector<std::int16_t> readInts16(const Process& process, Address address, std::size_t count)
+std::vector<std::int32_t> readInts(const Process& process, Address address, std::size_t count)
+std::vector<std::int64_t> readInts64(const Process& process, Address address, std::size_t count)
+std::vector<std::uint8_t> readBytes(const Process& process, Address address, std::size_t count)
+std::vector<std::uint16_t> readUInts16(const Process& process, Address address, std::size_t count)
+std::vector<std::uint32_t> readUInts(const Process& process, Address address, std::size_t count)
+std::vector<std::uint64_t> readUInts64(const Process& process, Address address, std::size_t count)
+std::vector<float> readFloats(const Process& process, Address address, std::size_t count)
+std::vector<double> readFloats64(const Process& process, Address address, std::size_t count)
+std::string readString(const Process& process, Address address, std::size_t size = 30)
+std::string readWString(const Process& process, Address address, std::size_t maxChars = 30)
+std::string bytesToString(const Process& process, Address address, std::size_t size)
+std::uint32_t pointerChain32(const Process& process, Address base, std::initializer_list<Address> offsets)
+std::uint64_t pointerChain64(const Process& process, Address base, std::initializer_list<Address> offsets)
+std::uint32_t pointerChain32(const Process& process, Address base, const Address* offsets, std::size_t count)
+std::uint64_t pointerChain64(const Process& process, Address base, const Address* offsets, std::size_t count)
+std::uint32_t pointerChain32(const Process& process, Address base, const std::vector<Address>& offsets)
+std::uint64_t pointerChain64(const Process& process, Address base, const std::vector<Address>& offsets)
+void writeInt8(const Process& process, Address address, std::int8_t data)
+void writeInt16(const Process& process, Address address, std::int16_t data)
+void writeInt(const Process& process, Address address, std::int32_t data)
+void writeInt64(const Process& process, Address address, std::int64_t data)
+void writeByte(const Process& process, Address address, std::uint8_t data)
+void writeUInt16(const Process& process, Address address, std::uint16_t data)
+void writeUInt(const Process& process, Address address, std::uint32_t data)
+void writeUInt64(const Process& process, Address address, std::uint64_t data)
+void writeFloat(const Process& process, Address address, float data)
+void writeFloat64(const Process& process, Address address, double data)
+void writeBool(const Process& process, Address address, bool data)
+void writeVec2(const Process& process, Address address, Vec2 data)
+void writeVec3(const Process& process, Address address, Vec3 data)
+void writeInts8(const Process& process, Address address, const std::vector<std::int8_t>& data)
+void writeInts16(const Process& process, Address address, const std::vector<std::int16_t>& data)
+void writeInts(const Process& process, Address address, const std::vector<std::int32_t>& data)
+void writeInts64(const Process& process, Address address, const std::vector<std::int64_t>& data)
+void writeBytes(const Process& process, Address address, const std::vector<std::uint8_t>& data)
+void writeUInts16(const Process& process, Address address, const std::vector<std::uint16_t>& data)
+void writeUInts(const Process& process, Address address, const std::vector<std::uint32_t>& data)
+void writeUInts64(const Process& process, Address address, const std::vector<std::uint64_t>& data)
+void writeFloats(const Process& process, Address address, const std::vector<float>& data)
+void writeFloats64(const Process& process, Address address, const std::vector<double>& data)
+void writeInts8(const Process& process, Address address, std::initializer_list<std::int8_t> data)
+void writeInts16(const Process& process, Address address, std::initializer_list<std::int16_t> data)
+void writeInts(const Process& process, Address address, std::initializer_list<std::int32_t> data)
+void writeInts64(const Process& process, Address address, std::initializer_list<std::int64_t> data)
+void writeBytes(const Process& process, Address address, std::initializer_list<std::uint8_t> data)
+void writeUInts16(const Process& process, Address address, std::initializer_list<std::uint16_t> data)
+void writeUInts(const Process& process, Address address, std::initializer_list<std::uint32_t> data)
+void writeUInts64(const Process& process, Address address, std::initializer_list<std::uint64_t> data)
+void writeFloats(const Process& process, Address address, std::initializer_list<float> data)
+void writeFloats64(const Process& process, Address address, std::initializer_list<double> data)
+void writeString(const Process& process, Address address, const std::string& data)
+void writeStringZ(const Process& process, Address address, const std::string& data)
+void writeWString(const Process& process, Address address, const std::string& utf8)
+DataType dataTypeFromString(const std::string& name)
+const char* dataTypeToString(DataType type)
+std::size_t dataTypeSize(DataType type)
+Value readValue(const Process& process, Address address, DataType type)
+std::vector<Value> readValues(const Process& process, Address address, DataType type, std::size_t count)
+void writeValue(const Process& process, Address address, const Value& data)
+void writeValues(const Process& process, Address address, DataType type, const std::vector<Value>& data)
+
+##############################################################################################################
+ptrace (Linux only)
+  pymeow/ptrace.hpp
+##############################################################################################################
+std::uintptr_t injectSyscall(int pid, long syscallNumber, std::uintptr_t arg0 = 0, std::uintptr_t arg1 = 0, std::uintptr_t arg2 = 0, std::uintptr_t arg3 = 0, std::uintptr_t arg4 = 0, std::uintptr_t arg5 = 0)
+void pageProtection(int pid, std::uintptr_t address, int protection)
+std::uintptr_t allocateMemory(int pid, std::size_t size, int protection)
+bool freeMemory(int pid, std::uintptr_t address)
+bool canTrace()
+
+##############################################################################################################
+Utils (colors, window / screen info, timing, worldToScreen)
+  pymeow/utils.hpp
+##############################################################################################################
+Color newColor(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a = 255)
+Color newColorHex(std::uint32_t hexValue)
+Color newColorFloat(float r, float g, float b, float a = 1.0f)
+Color getColor(const std::string& colorName)
+Color parseColor(const std::string& colorName)
+bool tryParseColor(const std::string& colorName, Color& out)
+const std::vector<std::pair<std::string, Color>>& allColors()
+bool isColorName(const std::string& name)
+Color fadeColor(Color color, float alpha)
+float compareColorPct(Color color1, Color color2)
+std::pair<int, int> getDisplayResolution()
+WindowInfo getWindowInfo(const std::string& name)
+std::string getWindowTitle(int processId)
+double runTime()
+void sleepMs(int milliseconds)
+Vec2 worldToScreen(const Matrix& matrix, Vec3 pos, int screenWidth, int screenHeight, int algo = 0)
+WtsResult worldToScreenNoExc(const Matrix& matrix, Vec3 pos, int screenWidth, int screenHeight, int algo = 0)
+Vec2 worldToScreen(const float* matrix, Vec3 pos, int screenWidth, int screenHeight, int algo = 0)
+WtsResult worldToScreenNoExc(const float* matrix, Vec3 pos, int screenWidth, int screenHeight, int algo = 0)
+
+##############################################################################################################
+Vector math
+  pymeow/vec.hpp
+##############################################################################################################
+Vec2 vec2(float x = 0.0f, float y = 0.0f)
+Vec3 vec3(float x = 0.0f, float y = 0.0f, float z = 0.0f)
+Vec2 vec2Add(Vec2 v1, Vec2 v2)
+Vec2 vec2AddValue(Vec2 v, float value)
+Vec2 vec2Subtract(Vec2 v1, Vec2 v2)
+Vec2 vec2SubtractValue(Vec2 v, float value)
+Vec2 vec2Multiply(Vec2 v1, Vec2 v2)
+Vec2 vec2MultiplyValue(Vec2 v, float value)
+Vec2 vec2Divide(Vec2 v1, Vec2 v2)
+Vec2 vec2DivideValue(Vec2 v, float value)
+float vec2Length(Vec2 v)
+float vec2LengthSqr(Vec2 v)
+float vec2Distance(Vec2 v1, Vec2 v2)
+float vec2DistanceSqr(Vec2 v1, Vec2 v2)
+float vec2Dot(Vec2 v1, Vec2 v2)
+Vec2 vec2Normalize(Vec2 v)
+Vec2 vec2Lerp(Vec2 v1, Vec2 v2, float amount)
+Vec2 vec2Closest(Vec2 v, std::initializer_list<Vec2> vectorList)
+Vec3 vec3Add(Vec3 v1, Vec3 v2)
+Vec3 vec3AddValue(Vec3 v, float value)
+Vec3 vec3Subtract(Vec3 v1, Vec3 v2)
+Vec3 vec3SubtractValue(Vec3 v, float value)
+Vec3 vec3Multiply(Vec3 v1, Vec3 v2)
+Vec3 vec3MultiplyValue(Vec3 v, float value)
+Vec3 vec3Divide(Vec3 v1, Vec3 v2)
+Vec3 vec3DivideValue(Vec3 v, float value)
+float vec3Length(Vec3 v)
+float vec3LengthSqr(Vec3 v)
+float vec3Distance(Vec3 v1, Vec3 v2)
+float vec3DistanceSqr(Vec3 v1, Vec3 v2)
+float vec3Dot(Vec3 v1, Vec3 v2)
+Vec3 vec3Cross(Vec3 v1, Vec3 v2)
+Vec3 vec3Normalize(Vec3 v)
+Vec3 vec3Lerp(Vec3 v1, Vec3 v2, float amount)
+Vec3 vec3Closest(Vec3 v, std::initializer_list<Vec3> vectorList)
+
+##############################################################################################################
+Input (keyboard & mouse)
+  pymeow/input.hpp
+##############################################################################################################
+MouseButton mouseButtonFromString(const std::string& button)
+bool keyPressed(int key)
+void pressKey(int key, bool hold = false)
+void releaseKey(int key)
+bool mousePressed(MouseButton button = MouseButton::Left)
+bool mousePressed(const std::string& button)
+void mouseMove(int x, int y, bool relative = false)
+void mouseDown(MouseButton button = MouseButton::Left)
+void mouseDown(const std::string& button)
+void mouseUp(MouseButton button = MouseButton::Left)
+void mouseUp(const std::string& button)
+void mouseClick(MouseButton button = MouseButton::Left, int holdMs = 3)
+void mouseClick(const std::string& button, int holdMs = 3)
+Vec2 mousePosition()
+
+##############################################################################################################
+Pixel (screen capture & color search)
+  pymeow/pixel.hpp
+##############################################################################################################
+void forEachPixelInRegion(int x, int y, int width, int height, const std::function<void(const Pixel&)>& fn)
+std::vector<Pixel> pixelEnumRegion(int x, int y, int width, int height, bool absoluteCoords = false)
+std::vector<Pixel> pixelEnumScreen(bool absoluteCoords = false)
+Pixel pixelAtMouse()
+Pixel getPixel(int x, int y)
+bool pixelSaveToFile(int x, int y, int width, int height, const std::string& fileName)
+bool savePixelsAsPng(const std::vector<Pixel>& pixels, int width, int height, const std::string& fileName)
+std::vector<Pixel> pixelSearchColors(int x, int y, int width, int height, const std::vector<Color>& colors, float similarity, bool absoluteCoords = false)
+std::vector<Pixel> pixelSearchColors(int x, int y, int width, int height, std::initializer_list<Color> colors, float similarity, bool absoluteCoords = false)
+
+##############################################################################################################
+Overlay (transparent raylib window)
+  pymeow/overlay.hpp
+##############################################################################################################
+void overlayInit()
+void overlayInit(const OverlayConfig& config)
+void overlayInit(const std::string& target, int fps = 0, const std::string& title = "pyMeow", int logLevel = 5, int exitKey = -1, bool trackTarget = false)
+bool overlayLoop()
+void overlayClose()
+void toggleMouse()
+const OverlayConfig& overlayConfig()
+bool overlayReady()
+void beginDrawing()
+void endDrawing()
+int getFps()
+int getScreenWidth()
+int getScreenHeight()
+Vec2 getWindowPosition()
+void* getWindowHandle()
+void setFps(int fps)
+void setWindowPosition(int x, int y)
+void setWindowSize(int width, int height)
+void setWindowTitle(const std::string& title)
+void setWindowIcon(const std::string& filePath)
+void setWindowMonitor(int monitor)
+void setWindowFlag(unsigned int flag)
+void setLogLevel(int level)
+void takeScreenshot(const std::string& fileName)
+int getMonitorCount()
+std::string getMonitorName(int monitor = 0)
+int getMonitorRefreshRate(int monitor = 0)
+
+##############################################################################################################
+Render (drawing, textures, fonts, collisions)
+  pymeow/render.hpp
+##############################################################################################################
+void drawFps(float posX, float posY)
+void drawText(const std::string& text, float posX, float posY, float fontSize, Color color)
+void drawPixel(float posX, float posY, Color color)
+void drawLine(float startPosX, float startPosY, float endPosX, float endPosY, Color color, float thick = 1.0f)
+void drawCircle(float centerX, float centerY, float radius, Color color)
+void drawCircleLines(float centerX, float centerY, float radius, Color color)
+void drawCircleSector(float centerX, float centerY, float radius, float startAngle, float endAngle, int segments, Color color)
+void drawCircleSectorLines(float centerX, float centerY, float radius, float startAngle, float endAngle, int segments, Color color)
+void drawRing(float centerX, float centerY, float innerRadius, float outerRadius, float startAngle, float endAngle, int segments, Color color)
+void drawRingLines(float centerX, float centerY, float innerRadius, float outerRadius, float startAngle, float endAngle, int segments, Color color)
+void drawEllipse(float centerX, float centerY, float radiusH, float radiusV, Color color)
+void drawEllipseLines(float centerX, float centerY, float radiusH, float radiusV, Color color)
+Rect drawRectangle(float posX, float posY, float width, float height, Color color)
+Rect drawRectangleLines(float posX, float posY, float width, float height, Color color, float lineThick = 1.0f)
+Rect drawRectangleRounded(float posX, float posY, float width, float height, float roundness, int segments, Color color)
+Rect drawRectangleRoundedLines(float posX, float posY, float width, float height, float roundness, int segments, Color color, float lineThick = 1.0f)
+void drawTriangle(float pos1X, float pos1Y, float pos2X, float pos2Y, float pos3X, float pos3Y, Color color)
+void drawTriangleLines(float pos1X, float pos1Y, float pos2X, float pos2Y, float pos3X, float pos3Y, Color color)
+void drawPoly(float posX, float posY, int sides, float radius, float rotation, Color color)
+void drawPolyLines(float posX, float posY, int sides, float radius, float rotation, float lineThick, Color color)
+::Texture2D loadTexture(const std::string& fileName)
+::Texture2D loadTextureBytes(const std::string& fileType, const std::vector<std::uint8_t>& data)
+::Texture2D loadTextureBytes(const std::string& fileType, const std::uint8_t* data, std::size_t size)
+void drawTexture(const ::Texture2D& texture, float posX, float posY, Color tint, float rotation = 0.0f, float scale = 1.0f)
+void drawTexture(const ::Texture2D& texture, Rect source, Rect dest, Color tint)
+void unloadTexture(::Texture2D& texture)
+void loadFont(const std::string& fileName, int fontId, int fontSize = 0)
+void unloadFont(int fontId)
+bool fontExists(int fontId)
+void drawFont(int fontId, const std::string& text, float posX, float posY, float fontSize, float spacing, Color tint)
+Vec2 measureFont(int fontId, const std::string& text, float fontSize, float spacing)
+int measureText(const std::string& text, int fontSize)
+bool checkCollisionPointRec(float pointX, float pointY, Rect rec)
+bool checkCollisionRecs(Rect rec1, Rect rec2)
+bool checkCollisionCircleRec(float posX, float posY, float radius, Rect rec)
+bool checkCollisionCircles(float pos1X, float pos1Y, float radius1, float pos2X, float pos2Y, float radius2)
+Vec2 checkCollisionLines(float startPos1X, float startPos1Y, float endPos1X, float endPos1Y, float startPos2X, float startPos2Y, float endPos2X, float endPos2Y)
+Vec2 worldToScreen(const Matrix& matrix, Vec3 pos, int algo = 0)
+WtsResult worldToScreenNoExc(const Matrix& matrix, Vec3 pos, int algo = 0)
+Vec2 worldToScreen(const float* matrix, Vec3 pos, int algo = 0)
+WtsResult worldToScreenNoExc(const float* matrix, Vec3 pos, int algo = 0)
+
+##############################################################################################################
+GUI (raygui) -- namespace pymeow::gui
+  pymeow/gui.hpp
+##############################################################################################################
+bool windowBox(Rect bounds, const std::string& title)
+void groupBox(Rect bounds, const std::string& text)
+void line(Rect bounds, const std::string& text = "")
+void panel(Rect bounds, const std::string& text = "")
+Rect scrollPanel(Rect bounds, const std::string& text, Rect content, Vec2& scroll)
+int scrollBar(Rect bounds, int value, int minValue, int maxValue)
+void label(Rect bounds, const std::string& text)
+bool button(Rect bounds, const std::string& text)
+bool labelButton(Rect bounds, const std::string& text)
+bool toggle(Rect bounds, const std::string& text, bool active)
+bool checkBox(Rect bounds, const std::string& text, bool checked)
+int comboBox(Rect bounds, const std::string& text, int active = 0)
+int dropdownBox(Rect bounds, const std::string& text, int id, int active = 0)
+std::string textBox(Rect bounds, const std::string& text, int id)
+int spinner(Rect bounds, const std::string& text, int value, int minValue, int maxValue, int id)
+float slider(Rect bounds, const std::string& textLeft, const std::string& textRight, float value, float minValue, float maxValue)
+float sliderBar(Rect bounds, const std::string& textLeft, const std::string& textRight, float value, float minValue, float maxValue)
+float progressBar(Rect bounds, const std::string& textLeft, const std::string& textRight, float value, float minValue, float maxValue)
+void statusBar(Rect bounds, const std::string& text)
+int messageBox(Rect bounds, const std::string& title, const std::string& message, const std::string& buttons)
+Color colorPicker(Rect bounds, int id)
+Color colorPicker(Rect bounds, const std::string& text, int id)
+float colorBarAlpha(Rect bounds, float alpha, const std::string& text = "")
+float colorBarHue(Rect bounds, float value, const std::string& text = "")
+void loadStyle(const std::string& fileName)
+void setFade(float alpha)
+void setState(int state)
+int getState()
+void lock()
+void unlock()
+void setStyle(int control, int property, int value)
+int getStyle(int control, int property)
+void clearWidgets()
+bool windowBox(float posX, float posY, float width, float height, const std::string& title)
+void groupBox(float posX, float posY, float width, float height, const std::string& text)
+void line(float posX, float posY, float width, float height, const std::string& text)
+void panel(float posX, float posY, float width, float height, const std::string& text = "")
+void label(float posX, float posY, float width, float height, const std::string& text)
+bool button(float posX, float posY, float width, float height, const std::string& text)
+bool labelButton(float posX, float posY, float width, float height, const std::string& text)
+bool toggle(float posX, float posY, float width, float height, const std::string& text, bool active)
+bool checkBox(float posX, float posY, float width, float height, const std::string& text, bool checked)
+int comboBox(float posX, float posY, float width, float height, const std::string& text, int active = 0)
+int dropdownBox(float posX, float posY, float width, float height, const std::string& text, int id, int active = 0)
+std::string textBox(float posX, float posY, float width, float height, const std::string& text, int id)
+int spinner(float posX, float posY, float width, float height, const std::string& text, int value, int minValue, int maxValue, int id)
+float slider(float posX, float posY, float width, float height, const std::string& textLeft, const std::string& textRight, float value, float minValue, float maxValue)
+float sliderBar(float posX, float posY, float width, float height, const std::string& textLeft, const std::string& textRight, float value, float minValue, float maxValue)
+float progressBar(float posX, float posY, float width, float height, const std::string& textLeft, const std::string& textRight, float value, float minValue, float maxValue)
+void statusBar(float posX, float posY, float width, float height, const std::string& text)
+int messageBox(float posX, float posY, float width, float height, const std::string& title, const std::string& message, const std::string& buttons)
+Color colorPicker(float posX, float posY, float width, float height, int id)
+Color colorPicker(float posX, float posY, float width, float height, const std::string& text, int id)
+int scrollBar(float posX, float posY, float width, float height, int value, int minValue, int maxValue)
+float colorBarAlpha(float posX, float posY, float width, float height, float alpha, const std::string& text = "")
+float colorBarHue(float posX, float posY, float width, float height, float value, const std::string& text = "")
+
+##############################################################################################################
+Sound -- namespace pymeow::sound
+  pymeow/sound.hpp
+##############################################################################################################
+void init()
+void deinit()
+bool isReady()
+int load(const std::string& fileName)
+void unload(int soundId)
+bool exists(int soundId)
+void play(int soundId)
+void pause(int soundId)
+void resume(int soundId)
+void stop(int soundId)
+void playMulti(int soundId)
+void stopMulti()
+void setVolume(int soundId, int volume)
+bool isPlaying(int soundId)
+
+
+##############################################################################################################
+##############################################################################################################
+* Every gui control also has a (float posX, float posY, float width, float height, ...) overload,
+  e.g. gui::button(0, 0, 100, 50, "text") as well as gui::button(pm::Rect{0, 0, 100, 50}, "text").
+* The typed reads/writes are templates (pm::read<T>, pm::write<T>, pm::readSeq<T>, pm::writeArray<T>);
+  readInt/writeInt/readFloat/... are the explicit versions of the Python r_int/w_int/r_float/... API.
+* Braced lists work for the array writers: pm::writeBytes(proc, addr, {0x90, 0x90});
+* pm::read<MyStruct> / pm::write<MyStruct> replace r_ctype / w_ctype (use #pragma pack(1) to match
+  the layout of the game).
+* Functions without a "try"/"NoExc" prefix throw a pymeow::Error subclass on failure.
+* Python names: include <pymeow/pycompat.hpp> for pm::open_process, pm::r_int, pm::w_bytes,
+  pm::aob_scan_module, pm::overlay_init, pm::gui_button, pm::load_sound, pm::get_color, ...
